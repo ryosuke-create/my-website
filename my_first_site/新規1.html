@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ガチャ計算 & 課金管理（ブラウザ単体版）</title>
+
+  <!-- Tailwind CDN for quick styles (play/cdn - not for production) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React / ReactDOM (UMD builds) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel for in-browser JSX transpile (development only) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- SheetJS for XLSX support -->
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+
+  <style>
+    /* small cosmetics for cards */
+    .card { background: white; border-radius: 1rem; box-shadow: 0 1px 8px rgba(0,0,0,0.04); padding: 1rem; }
+    .muted { color: #6b7280; } /* Tailwind slate-500 */
+    .input { border: 1px solid #e5e7eb; padding: 0.5rem; border-radius: 0.5rem; width:100%; }
+    .tab-trigger { padding: 0.5rem 0.75rem; cursor:pointer; border-radius: 0.5rem; }
+    .tab-trigger.active { background:#e6f4ea; color:#065f46; }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-slate-50 to-white p-6 min-h-screen">
+  <div id="root" class="max-w-6xl mx-auto"></div>
+
+  <script type="text/babel">
+  const { useState, useEffect, useMemo } = React;
+
+  // --- utilities ---
+  function clamp(n, min=0, max=1){ return Math.min(max, Math.max(min, n)); }
+  function fmtPercent(x){ if (!isFinite(x)) return "-"; return (x*100).toFixed(2) + "%"; }
+  function fmtJPY(x){ if (!isFinite(x)) return "-"; return x.toLocaleString("ja-JP", {style:"currency", currency:"JPY"}); }
+  function comb(n,k){
+    if (k<0||k>n) return 0;
+    k = Math.min(k, n-k);
+    let c = 1;
+    for (let i=1;i<=k;i++) c = (c*(n-k+i))/i;
+    return c;
+  }
+  function binomAtLeast(n,p,k){
+    let sum=0;
+    for (let i=k;i<=n;i++) sum += comb(n,i) * Math.pow(p,i) * Math.pow(1-p, n-i);
+    return clamp(sum,0,1);
+  }
+
+  // localStorage key
+  const LS_KEY = "gacha_calc_mvp_v1";
+
+  function useLocalStorage(key, initial){
+    const [state, setState] = useState(() => {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : initial;
+      } catch(e) { return initial; }
+    });
+    useEffect(()=> { localStorage.setItem(key, JSON.stringify(state)); }, [key, state]);
+    return [state, setState];
+  }
+
+  const DEFAULT_STATE = {
+    activeTab: "スタレ",
+    budgetJPY: 0,
+    purchases: [],
+    banners: {
+      "スタレ": { name:"スタレ", pRate:0.008, pityHard:90, pullCostJPY:300 },
+      "P5X": { name:"P5X", pRate:0.01, pityHard:200, pullCostJPY:250 },
+      "鳴潮": { name:"鳴潮", pRate:0.008, pityHard:80, pullCostJPY:300 },
+      "ZZZ": { name:"ZZZ", pRate:0.008, pityHard:90, pullCostJPY:300 },
+    }
+  };
+
+  // simple UI primitives (replace custom imports)
+  function Card({children, className}){ return <div className={"card "+(className||"")}>{children}</div>; }
+  function CardHeader({children}){ return <div className="mb-2">{children}</div>; }
+  function CardContent({children}){ return <div>{children}</div>; }
+  function CardTitle({children}){ return <div className="font-semibold text-lg">{children}</div>; }
+  function Button({children, onClick, variant}){ 
+    const base = "px-3 py-1.5 rounded-md border";
+    const cls = variant==="outline" ? base + " bg-white" : base + " bg-slate-100";
+    return <button className={cls} onClick={onClick}>{children}</button>;
+  }
+
+  // App
+  function App(){
+    const [state, setState] = useLocalStorage(LS_KEY, DEFAULT_STATE);
+    const { activeTab, banners, purchases, budgetJPY } = state;
+
+    const setBanner = (key, cfg) => {
+      setState({...state, banners: {...banners, [key]: {...banners[key], ...cfg}}});
+    };
+
+    const remainingBudget = useMemo(() => {
+      const spent = (purchases||[]).reduce((s,p)=> s + (p.amountJPY||0), 0);
+      return (budgetJPY||0) - spent;
+    }, [budgetJPY, purchases]);
+
+    const exportJSON = () => {
+      const blob = new Blob([JSON.stringify(state, null, 2)], {type:"application/json"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `gacha_calc_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+      a.click(); URL.revokeObjectURL(url);
+    };
+
+    const importJSON = (file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try { const data = JSON.parse(String(reader.result)); setState(data); }
+        catch(e){ alert("JSONの読み込みに失敗しました"); }
+      };
+      reader.readAsText(file);
+    };
+
+    const importXLSX = async (file) => {
+      try {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        const next = JSON.parse(JSON.stringify(state)); // clone
+        wb.SheetNames.forEach((name) => {
+          const ws = wb.Sheets[name];
+          const rows = XLSX.utils.sheet_to_json(ws, {defval:null});
+          const guess = (key) => {
+            const cand = rows.find(r => Object.keys(r).some(k => String(k).includes(key)));
+            if (!cand) return null;
+            const kv = Object.entries(cand).find(([k]) => String(k).includes(key));
+            const v = kv?.[1];
+            const num = Number(v);
+            if (!isFinite(num)) return null; return num;
+          };
+          const pRaw = guess("確率") ?? guess("rate") ?? guess("p");
+          const pity = guess("天井") ?? guess("pity");
+          const cost = guess("cost") ?? guess("単価") ?? guess("金額") ?? guess("JPY");
+          let pRate = pRaw;
+          if (pRate && pRate > 1) pRate = pRate / 100;
+          const cfg = {};
+          if (isFinite(Number(pRate))) cfg.pRate = Number(pRate);
+          if (isFinite(Number(pity))) cfg.pityHard = Number(pity);
+          if (isFinite(Number(cost))) cfg.pullCostJPY = Number(cost);
+          if (!next.banners[name]) next.banners[name] = { name, pRate:0.01, pullCostJPY:300 };
+          next.banners[name] = { ...next.banners[name], ...cfg };
+        });
+        setState(next);
+      } catch(e){ alert("Excelの読み込みに失敗しました"); }
+    };
+
+    return (
+      <div>
+        <header className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold">ガチャ計算 &amp; 課金管理</h1>
+            <p className="muted text-sm">MVP版：単純化モデル（固定確率+任意の天井表示）/ ローカル保存</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="cursor-pointer flex items-center gap-2 text-sm">
+              📂 JSON読込
+              <input type="file" accept="application/json" className="hidden" onChange={(e)=>{
+                const f = e.target.files?.[0]; if (f) importJSON(f);
+              }} />
+            </label>
+            <label className="cursor-pointer flex items-center gap-2 text-sm">
+              📥 Excel読込
+              <input type="file" accept=".xls,.xlsx" className="hidden" onChange={async (e)=>{
+                const f = e.target.files?.[0]; if (f) await importXLSX(f);
+              }} />
+            </label>
+            <Button variant="outline" onClick={exportJSON}>💾 バックアップ</Button>
+          </div>
+        </header>
+
+        <div className="grid md:grid-cols-3 gap-4 mb-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>🧮 概要</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="muted text-sm">このツールは <b>単発確率</b> と <b>試行回数</b> から「目的の枚数以上引ける確率」を計算します。天井・50/50等の詳細モデルは次版で追加予定です。</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>👛 予算</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <label className="text-xs muted">今月のガチャ予算（JPY）</label>
+              <input className="input mt-1" type="number" value={budgetJPY} onChange={(e)=> setState({...state, budgetJPY: Number(e.target.value||0)})} />
+              <div className="flex items-center justify-between text-sm mt-2">
+                <span>残り</span>
+                <span className={(remainingBudget>=0?"":"text-red-600") + " font-semibold"}>{fmtJPY(remainingBudget)}</span>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>🔁 リセット</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Button variant="outline" onClick={()=>{
+                if (confirm("ローカル保存を初期化します。よろしいですか？")){
+                  localStorage.removeItem(LS_KEY);
+                  location.reload();
+                }
+              }}>全データ初期化</Button>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Tabs */}
+        <div className="mb-4">
+          <div className="flex gap-2 mb-3">
+            {Object.keys(banners).map(k => (
+              <div key={k} className={"tab-trigger " + (state.activeTab===k ? "active" : "")}
+                onClick={() => setState({...state, activeTab: k})}>
+                {k}
+              </div>
+            ))}
+          </div>
+
+          <div>
+            {Object.keys(banners).map(k => (
+              state.activeTab === k ? <BannerCalculator key={k} cfg={banners[k]} onChange={(c)=> setBanner(k,c)} /> : null
+            ))}
+          </div>
+        </div>
+
+        <PurchaseManager purchases={purchases} setState={setState} budgetJPY={budgetJPY} remainingBudget={remainingBudget} />
+
+        <div className="muted text-xs mt-6">
+          <p>⚠️ 注意: 本MVPは <b>固定確率・独立試行</b> を仮定した近似計算です。ゲーム特有のソフト天井や50/50、すり抜け補償等は未実装です。</p>
+        </div>
+      </div>
+    );
+  }
+
+  function BannerCalculator({ cfg, onChange }){
+    const [nPulls, setNPulls] = useState(90);
+    const [targetCopies, setTargetCopies] = useState(1);
+    const [showAdvanced, setShowAdvanced] = useState(false);
+
+    const prob = useMemo(()=> binomAtLeast(nPulls, clamp(cfg.pRate), targetCopies), [nPulls, cfg.pRate, targetCopies]);
+    const expectedSpend = useMemo(()=> nPulls * (cfg.pullCostJPY||0), [nPulls, cfg.pullCostJPY]);
+    const expectedCopies = useMemo(()=> nPulls * clamp(cfg.pRate), [nPulls, cfg.pRate]);
+
+    const maxAffordablePulls = useMemo(()=> {
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        const budget = raw ? (JSON.parse(raw)?.budgetJPY || 0) : 0;
+        const spent = raw ? (JSON.parse(raw)?.purchases || []).reduce((s,p)=> s + (p.amountJPY||0), 0) : 0;
+        const remaining = budget - spent;
+        if (!cfg.pullCostJPY) return 0;
+        return Math.floor(Math.max(0, remaining)/cfg.pullCostJPY);
+      } catch(e){ return 0; }
+    }, [cfg.pullCostJPY]);
+
+    return (
+      <Card className="mb-4">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>{cfg.name} – バナー設定 {cfg.pityHard ? <span className="text-sm ml-2 inline-block px-2 py-0.5 border rounded">{`天井: ${cfg.pityHard}連`}</span> : null}</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm">単発で当たる確率（例: 0.008 = 0.8%）</label>
+                <input className="input mt-1" type="number" step="0.0001" value={cfg.pRate} onChange={(e)=> onChange({ pRate: Number(e.target.value||0) })} />
+              </div>
+              <div>
+                <label className="text-sm">1連あたりのコスト（JPY）</label>
+                <input className="input mt-1" type="number" value={cfg.pullCostJPY} onChange={(e)=> onChange({ pullCostJPY: Number(e.target.value||0) })} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm">回す回数（連）</label>
+                  <input className="input mt-1" type="number" value={nPulls} onChange={(e)=> setNPulls(Number(e.target.value||0))} />
+                  <div className="text-xs muted mt-1">残り予算で回せる目安: <b>{maxAffordablePulls}</b> 連</div>
+                </div>
+                <div>
+                  <label className="text-sm">欲しい枚数（以上）</label>
+                  <input className="input mt-1" type="number" value={targetCopies} onChange={(e)=> setTargetCopies(Number(e.target.value||0))} />
+                </div>
+              </div>
+              <div className="text-sm muted">
+                <p>※ 現在は <b>固定確率</b> の単純モデル。ソフト天井/50-50/すり抜け保証は将来対応。</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <ResultRow label="目標達成確率" value={fmtPercent(prob)} highlight />
+              <ResultRow label="期待枚数" value={expectedCopies.toFixed(2) + " 枚"} />
+              <ResultRow label="想定消費額（最大）" value={fmtJPY(expectedSpend)} />
+              <div className="pt-2">
+                <label className="text-sm">高度な設定</label>
+                <div className="flex items-center gap-2 py-2">
+                  <input id="adv" type="checkbox" checked={showAdvanced} onChange={(e)=> setShowAdvanced(e.target.checked)} />
+                  <label htmlFor="adv" className="text-sm">天井回数の表示/メモ</label>
+                </div>
+                {showAdvanced && (
+                  <div>
+                    <label className="text-sm">ハード天井（連）</label>
+                    <input className="input mt-1" type="number" value={cfg.pityHard || 0} onChange={(e)=> onChange({ pityHard: Number(e.target.value||0) })} />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  function ResultRow({ label, value, highlight=false }){
+    return (
+      <div className={"flex items-center justify-between p-3 border rounded-xl " + (highlight ? "bg-emerald-50 border-emerald-200" : "bg-white")}>
+        <span className="text-slate-600">{label}</span>
+        <span className={"font-semibold " + (highlight ? "text-emerald-700 text-lg" : "")}>{value}</span>
+      </div>
+    );
+  }
+
+  function PurchaseManager({ purchases, setState, budgetJPY, remainingBudget }){
+    const addRow = () => {
+      const id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+      const today = new Date().toISOString().slice(0,10);
+      const next = { id, date: today, item: "ジェム購入", amountJPY: 0 };
+      setState(prev => ({ ...prev, purchases: [next, ...(prev.purchases||[])] }));
+    };
+    const update = (id, patch) => {
+      setState(prev => ({ ...prev, purchases: prev.purchases.map(p => p.id===id ? {...p, ...patch} : p) }));
+    };
+    const remove = (id) => {
+      setState(prev => ({ ...prev, purchases: prev.purchases.filter(p => p.id !== id) }));
+    };
+    const total = (purchases||[]).reduce((s,p)=> s + (p.amountJPY||0), 0);
+
+    const exportXLSX = () => {
+      const ws = XLSX.utils.json_to_sheet(purchases || []);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "purchases");
+      XLSX.writeFile(wb, `課金履歴_${new Date().toISOString().slice(0,10)}.xlsx`);
+    };
+
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>💳 課金管理</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm muted">合計: <b>{fmtJPY(total)}</b> / 予算: <b>{fmtJPY(budgetJPY)}</b> / 残り: <b className={remainingBudget<0? 'text-red-600':''}>{fmtJPY(remainingBudget)}</b></div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={addRow}>追加</Button>
+              <Button variant="outline" onClick={exportXLSX}>Excelに書き出し</Button>
+            </div>
+          </div>
+
+          <div className="grid gap-2">
+            {(purchases||[]).length === 0 && <div className="text-xs muted">記録がありません。「追加」から行を作成してください。</div>}
+            {(purchases||[]).map(p => (
+              <div key={p.id} className="grid md:grid-cols-12 gap-2 items-center p-2 rounded-xl border">
+                <label className="text-xs md:col-span-1">日付</label>
+                <input type="date" value={p.date} className="md:col-span-2 input" onChange={(e)=> update(p.id, { date: e.target.value })} />
+                <label className="text-xs md:col-span-1">項目</label>
+                <input value={p.item} className="md:col-span-4 input" onChange={(e)=> update(p.id, { item: e.target.value })} />
+                <label className="text-xs md:col-span-1">金額</label>
+                <input type="number" value={p.amountJPY} className="md:col-span-2 input" onChange={(e)=> update(p.id, { amountJPY: Number(e.target.value||0) })} />
+                <button className="md:col-span-1 px-2 py-1 text-sm" onClick={()=> remove(p.id)}>🗑️</button>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // render
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+  </script>
+</body>
+</html>

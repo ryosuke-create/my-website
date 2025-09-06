@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>タブ切り替えの例</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+    /* タブのボタン */
+    .tab {
+      display: inline-block;
+      padding: 10px 20px;
+      margin-right: 5px;
+      background: #eee;
+      cursor: pointer;
+      border-radius: 5px 5px 0 0;
+    }
+    .tab.active {
+      background: #3498db;
+      color: #fff;
+    }
+
+    /* タブの中身 */
+    .tab-content {
+      display: none;
+      padding: 20px;
+      border: 1px solid #ccc;
+      border-top: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h1>タブ切り替えのデモ</h1>
+
+  <!-- タブ部分 -->
+  <div>
+    <div class="tab active" onclick="showTab('tab1')">タブ1</div>
+    <div class="tab" onclick="showTab('tab2')">タブ2</div>
+    <div class="tab" onclick="showTab('tab3')">タブ3</div>
+  </div>
+
+  <!-- コンテンツ部分 -->
+  <div id="tab1" class="tab-content active">
+    <p>これはタブ1の内容です。</p>
+  </div>
+  <div id="tab2" class="tab-content">
+    <p>これはタブ2の内容です。</p>
+  </div>
+  <div id="tab3" class="tab-content">
+    <p>これはタブ3の内容です。</p>
+  </div>
+
+  <script>
+    function showTab(tabId) {
+      // すべてのタブと内容をリセット
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+      // クリックしたタブと対応する内容をアクティブ化
+      event.target.classList.add('active');
+      document.getElementById(tabId).classList.add('active');
+    }
+  </script>
+</body>
+</html>

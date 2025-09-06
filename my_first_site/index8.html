@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>ステップ12：モーダル</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 24px; }
+
+    /* 画面全体のオーバーレイ（初期は非表示） */
+    .overlay {
+      position: fixed; inset: 0;                  /* 画面全体 */
+      background: rgba(0,0,0,0.5);
+      display: none;                              /* 非表示 */
+      align-items: center; justify-content: center;
+    }
+    .overlay.active { display: flex; }            /* 表示時 */
+
+    /* モーダル本体 */
+    .modal {
+      background: #fff;
+      width: min(90vw, 520px);
+      border-radius: 12px;
+      padding: 20px 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+      position: relative;
+    }
+    .modal h2 { margin-top: 0; }
+    .close-btn {
+      position: absolute; right: 12px; top: 10px;
+      border: none; background: transparent; font-size: 20px; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>モーダルのデモ</h1>
+  <button id="openBtn">モーダルを開く</button>
+
+  <!-- オーバーレイ＋モーダル -->
+  <div id="overlay" class="overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="close-btn" id="closeBtn" aria-label="閉じる">×</button>
+      <h2 id="modalTitle">お知らせ</h2>
+      <p>ここに任意の内容（説明、フォーム、画像など）を配置できます。</p>
+    </div>
+  </div>
+
+  <script>
+    const overlay = document.getElementById('overlay');
+    const openBtn = document.getElementById('openBtn');
+    const closeBtn = document.getElementById('closeBtn');
+
+    function openModal() {
+      overlay.classList.add('active');
+      overlay.setAttribute('aria-hidden', 'false');
+      closeBtn.focus(); // 開いたら×ボタンにフォーカスを移す（キーボード操作に親切）
+    }
+
+    function closeModal() {
+      overlay.classList.remove('active');
+      overlay.setAttribute('aria-hidden', 'true');
+      openBtn.focus();  // 元のボタンにフォーカスを戻す
+    }
+
+    // ボタン操作
+    openBtn.addEventListener('click', openModal);
+    closeBtn.addEventListener('click', closeModal);
+
+    // 背景クリックで閉じる（モーダル外をクリックした場合のみ）
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+
+    // Escキーで閉じる
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.classList.contains('active')) {
+        closeModal();
+      }
+    });
+  </script>
+</body>
+</html>
